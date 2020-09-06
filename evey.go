@@ -5,7 +5,6 @@ import (
 	"net/http"
 	"path"
 	"regexp"
-	"strings"
 )
 
 /*    understand/
@@ -40,11 +39,31 @@ func main() {
  * body and save the message to the queue
  */
 func put(ctx *context, r *http.Request, w http.ResponseWriter) {
-	name := r.URL.Path[len("/put/"):]
-	if isInvalidName(name) {
+  name := getQueueName(r)
+  if len(name) == 0 {
 		w.WriteHeader(400)
 		return
 	}
+}
+
+
+/*    way/
+ * Trim the prefix from the path then return the 
+ * name if valid.
+ */
+func getQueueName(r *http.Request) string {
+  name := r.URL.Path
+  for i := 1;i < len(name);i++  {
+    if name[i] == '/' {
+      name = name[i+1:]
+      break
+    }
+  }
+	if isInvalidName(name) {
+    return ""
+  } else {
+    return name
+  }
 }
 
 func get(ctx *context, r *http.Request, w http.ResponseWriter) {
@@ -56,10 +75,6 @@ func get(ctx *context, r *http.Request, w http.ResponseWriter) {
  * queues must have simple, valid, filenames
  */
 func isInvalidName(n string) bool {
-	n = strings.TrimSpace(n)
-	if len(n) == 0 {
-		return true
-	}
 	r, _ := regexp.MatchString(`[^-.A-Za-z0-9]`, n)
 	return r
 }
