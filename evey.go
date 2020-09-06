@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
@@ -27,6 +29,8 @@ func main() {
 		db:   path.Join("..", "data"),
 		logs: []*msglog{},
 	}
+
+	loadLogs(ctx)
 
 	with_ctx := func(fn reqHandler) httpHandler {
 		return func(w http.ResponseWriter, r *http.Request) {
@@ -93,9 +97,79 @@ func save(name string, len_ uint32, inp io.ReadCloser, ctx *context) (int, error
 	return len(msglog.msgs), nil
 }
 
+func loadLogs(ctx *context) {
+	files, err := ioutil.ReadDir(ctx.db)
+	if err != nil {
+		log.Panic("Failed to read", ctx.db)
+	}
+	for _, f := range files {
+		loadLog(f, ctx)
+	}
+}
+
+/*    way/
+ * If this looks like a log file, we read in the
+ * header, then walk the records checking that
+ * each starts with a valid header and keeping
+ * track of the offsets
+ */
+func loadLog(inf os.FileInfo, ctx *context) {
+	name := inf.Name()
+	if !strings.HasSuffix(name, ".log") {
+		return
+	}
+	logfile := path.Join(ctx.db, name)
+	f, err := os.OpenFile(logfile, os.O_RDWR, 0644)
+	if err != nil {
+		log.Panic("Failed to open:", f.Name, err)
+	}
+	hdr := make([]byte, len(DBHEADER))
+	_, err = io.ReadFull(f, hdr)
+	if err != nil {
+		log.Panic("Failed to read:", f.Name, err)
+	}
+	if bytes.Compare(DBHEADER, hdr) != 0 {
+		log.Panic("Invalid DB header:", f.Name)
+	}
+	var msgs []int64
+	if err != nil {
+		log.Panic("Failed getting size of:", f.Name, err)
+	}
+	sz := inf.Size()
+	offset := int64(len(DBHEADER))
+	hdrsz := len(RECHEADER) + 4 + 1 /* 4: uint32 len + 1: '\n' */
+	hdr = make([]byte, hdrsz)
+	for offset < sz {
+		msgs = append(msgs, offset)
+		if _, err := io.ReadFull(f, hdr); err != nil {
+			log.Panic("Failed reading offset:", offset, " from file:", name)
+		}
+		if bytes.Compare(RECHEADER, hdr[:len(RECHEADER)]) != 0 {
+			log.Panic("Did not match rec header:", offset, " from file:", name)
+		}
+		if hdr[len(hdr)-1] != '\n' {
+			log.Panic("Did not match newline:", offset, " from file:", name)
+		}
+		b_ := bytes.NewReader(hdr[len(RECHEADER) : len(RECHEADER)+4])
+		var v uint32
+		if err := binary.Read(b_, binary.LittleEndian, &v); err != nil {
+			log.Panic("Did not get file size:", offset, " from file:", name)
+		}
+		offset += int64(v) + int64(len(hdr))
+		f.Seek(offset, io.SeekStart)
+	}
+	name = name[:len(name)-len(".log")]
+	ctx.logs = append(ctx.logs, &msglog{
+		name: name,
+		f:    f,
+		msgs: nil,
+	})
+	f.Seek(0, io.SeekEnd)
+}
+
 func createLog(name string, ctx *context) *msglog {
 	logfile := path.Join(ctx.db, name+".log")
-	f, err := os.OpenFile(logfile, os.O_APPEND|os.O_CREATE|os.O_RDWR, 0644)
+	f, err := os.OpenFile(logfile, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		log.Println("createLog:", err)
 		return nil
