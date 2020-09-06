@@ -50,6 +50,11 @@ func put(ctx *context, r *http.Request, w http.ResponseWriter) {
 func get(ctx *context, r *http.Request, w http.ResponseWriter) {
 }
 
+/*    understand/
+ * A limitation we have currently is we simply save our
+ * queue as `queue.log` filename to disk. For this reason
+ * queues must have simple, valid, filenames
+ */
 func isInvalidName(n string) bool {
 	n = strings.TrimSpace(n)
 	if len(n) == 0 {
