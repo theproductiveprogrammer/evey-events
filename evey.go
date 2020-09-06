@@ -82,19 +82,19 @@ func put(ctx *context, r *http.Request, w http.ResponseWriter) {
  * and save the data to it
  */
 func save(name string, len_ uint32, inp io.ReadCloser, ctx *context) (int, error) {
-	msglog := findLog(name, ctx)
-	if msglog == nil {
-		msglog = createLog(name, ctx)
-		if msglog == nil {
+	mlg := findLog(name, ctx)
+	if mlg == nil {
+		mlg = createLog(name, ctx)
+		if mlg == nil {
 			return 0, errors.New("save: failed to create log")
 		}
 	}
-	offset, err := saveMsg(len_, inp, msglog)
+	offset, err := saveMsg(len_, inp, mlg)
 	if err != nil {
 		return 0, err
 	}
-	msglog.msgs = append(msglog.msgs, offset)
-	return len(msglog.msgs), nil
+	mlg.msgs = append(mlg.msgs, offset)
+	return len(mlg.msgs), nil
 }
 
 func loadLogs(ctx *context) {
@@ -121,50 +121,57 @@ func loadLog(inf os.FileInfo, ctx *context) {
 	logfile := path.Join(ctx.db, name)
 	f, err := os.OpenFile(logfile, os.O_RDWR, 0644)
 	if err != nil {
-		log.Panic("Failed to open:", f.Name, err)
+		log.Panic("loadLog:Failed to open:", f.Name, err)
 	}
 	hdr := make([]byte, len(DBHEADER))
 	_, err = io.ReadFull(f, hdr)
 	if err != nil {
-		log.Panic("Failed to read:", f.Name, err)
+		log.Panic("loadLog:Failed to read:", f.Name, err)
 	}
 	if bytes.Compare(DBHEADER, hdr) != 0 {
-		log.Panic("Invalid DB header:", f.Name)
+		log.Panic("loadLog:Invalid DB header:", f.Name)
 	}
 	var msgs []int64
-	if err != nil {
-		log.Panic("Failed getting size of:", f.Name, err)
-	}
 	sz := inf.Size()
 	offset := int64(len(DBHEADER))
-	hdrsz := len(RECHEADER) + 4 + 1 /* 4: uint32 len + 1: '\n' */
-	hdr = make([]byte, hdrsz)
 	for offset < sz {
 		msgs = append(msgs, offset)
-		if _, err := io.ReadFull(f, hdr); err != nil {
-			log.Panic("Failed reading offset:", offset, " from file:", name)
+		reclen, err := getRecLen(offset, f)
+		if err != nil {
+			log.Panic("loadLog:", err.Error(), " at offset:", offset, " for file:", name)
 		}
-		if bytes.Compare(RECHEADER, hdr[:len(RECHEADER)]) != 0 {
-			log.Panic("Did not match rec header:", offset, " from file:", name)
-		}
-		if hdr[len(hdr)-1] != '\n' {
-			log.Panic("Did not match newline:", offset, " from file:", name)
-		}
-		b_ := bytes.NewReader(hdr[len(RECHEADER) : len(RECHEADER)+4])
-		var v uint32
-		if err := binary.Read(b_, binary.LittleEndian, &v); err != nil {
-			log.Panic("Did not get file size:", offset, " from file:", name)
-		}
-		offset += int64(v) + int64(len(hdr))
-		f.Seek(offset, io.SeekStart)
+		offset += int64(reclen) + RECHEADERSZ
 	}
 	name = name[:len(name)-len(".log")]
 	ctx.logs = append(ctx.logs, &msglog{
 		name: name,
 		f:    f,
-		msgs: nil,
+		msgs: msgs,
 	})
-	f.Seek(0, io.SeekEnd)
+}
+
+func getRecLen(offset int64, f *os.File) (uint32, error) {
+	pfxsz := len(RECHEADER)
+	hdr := make([]byte, RECHEADERSZ)
+
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return 0, errors.New("Seek Failed")
+	}
+	if _, err := io.ReadFull(f, hdr); err != nil {
+		return 0, errors.New("Read Failed")
+	}
+	if bytes.Compare(RECHEADER, hdr[:len(RECHEADER)]) != 0 {
+		return 0, errors.New("Invalid Rec Header")
+	}
+	if hdr[len(hdr)-1] != '\n' {
+		return 0, errors.New("Invalid header '\n'")
+	}
+	b_ := bytes.NewReader(hdr[pfxsz : pfxsz+4])
+	var v uint32
+	if err := binary.Read(b_, binary.LittleEndian, &v); err != nil {
+		return 0, errors.New("Failed reading Rec size")
+	}
+	return v, nil
 }
 
 func createLog(name string, ctx *context) *msglog {
@@ -188,29 +195,28 @@ func createLog(name string, ctx *context) *msglog {
 	return msglog
 }
 
-func saveMsg(len_ uint32, inp io.ReadCloser, log_ *msglog) (int64, error) {
-	inf, err := log_.f.Stat()
+func saveMsg(len_ uint32, inp io.ReadCloser, mlg *msglog) (int64, error) {
+	if _, err := mlg.f.Seek(0, io.SeekEnd); err != nil {
+		return 0, err
+	}
+	inf, err := mlg.f.Stat()
 	if err != nil {
 		return 0, err
 	}
-	_, err = log_.f.Write(RECHEADER)
-	if err != nil {
+	if _, err := mlg.f.Write(RECHEADER); err != nil {
 		return 0, err
 	}
-	err = binary.Write(log_.f, binary.LittleEndian, len_)
-	if err != nil {
+	if err := binary.Write(mlg.f, binary.LittleEndian, len_); err != nil {
 		return 0, err
 	}
-	_, err = log_.f.Write([]byte{'\n'})
-	if err != nil {
+	if _, err := mlg.f.Write([]byte{'\n'}); err != nil {
 		return 0, err
 	}
 	buf := make([]byte, 1024)
 	n, err := inp.Read(buf)
 	for n > 0 || err == nil {
 		if n > 0 {
-			_, err := log_.f.Write(buf[:n])
-			if err != nil {
+			if _, err := mlg.f.Write(buf[:n]); err != nil {
 				return 0, err
 			}
 		}
@@ -254,6 +260,46 @@ func getQueueName(r *http.Request) string {
 }
 
 func get(ctx *context, r *http.Request, w http.ResponseWriter) {
+	name := getQueueName(r)
+	if len(name) == 0 {
+		err_("get: Invalid/Missing queue name", 400, w)
+		return
+	}
+	mlg := findLog(name, ctx)
+	if mlg == nil {
+		err_("get: No log found:"+name, 404, w)
+		return
+	}
+	qv := r.URL.Query()["n"]
+	if qv == nil || len(qv) == 0 {
+		err_("get: Missing msg number", 400, w)
+		return
+	}
+	n, err := strconv.ParseUint(qv[0], 10, 32)
+	if err != nil || n < 1 {
+		err_("get: Invalid msg number", 400, w)
+		return
+	}
+  n -= 1
+	if int(n) < len(mlg.msgs) {
+		sendLog(mlg, uint32(n), w)
+	}
+}
+
+func sendLog(mlg *msglog, n uint32, w http.ResponseWriter) {
+	off := mlg.msgs[n]
+	reclen, err := getRecLen(off, mlg.f)
+	if err != nil {
+		err_(err.Error(), 500, w)
+		return
+	}
+	rec := make([]byte, reclen)
+  off += RECHEADERSZ
+	if n, _ := mlg.f.ReadAt(rec, off); n < len(rec) {
+		err_("Failed reading record", 500, w)
+		return
+	}
+	w.Write(rec)
 }
 
 /*    understand/
@@ -288,3 +334,4 @@ type httpHandler func(http.ResponseWriter, *http.Request)
 
 var DBHEADER = []byte("EE|v1|")
 var RECHEADER = []byte("\n|EE|")
+var RECHEADERSZ = int64(len(RECHEADER) + 4 + 1) /* 4: uint32 len + 1: '\n' */
