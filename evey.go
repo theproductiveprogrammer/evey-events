@@ -281,9 +281,11 @@ func get(ctx *context, r *http.Request, w http.ResponseWriter) {
 		return
 	}
   n -= 1
-	if int(n) < len(mlg.msgs) {
-		sendLog(mlg, uint32(n), w)
-	}
+	if int(n) >= len(mlg.msgs) {
+    w.WriteHeader(204)
+    return
+  }
+  sendLog(mlg, uint32(n), w)
 }
 
 func sendLog(mlg *msglog, n uint32, w http.ResponseWriter) {
