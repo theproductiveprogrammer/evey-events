@@ -20,36 +20,43 @@ import (
  * main entry point into our program
  *
  *    way/
- * Create a context and handle /put and /get requests
- * from our clients.
+ * Initialize the state, load existing logs, set up the client
+ * request handlers and start our server.
  */
 func main() {
-	ctx := &context{
-		port: "127.0.0.1:7749",
-		db:   path.Join("..", "data"),
+  state := initState()
+	loadLogs(state)
+  setupRequestHandlers(state)
+
+	log.Println("Starting server on", state.addr, "writing to", state.db)
+	log.Fatal(http.ListenAndServe(state.addr, nil))
+}
+
+func initState() *state {
+	return &state {
+		addr: "127.0.0.1:7749",
+		db:   path.Join("..", "evey-data"),
 		logs: []*msglog{},
 	}
+}
 
-	loadLogs(ctx)
-
-	with_ctx := func(fn reqHandler) httpHandler {
+func setupRequestHandlers(state *state) {
+	with_state := func(fn reqHandler) httpHandler {
 		return func(w http.ResponseWriter, r *http.Request) {
-			fn(ctx, r, w)
+			fn(state, r, w)
 		}
 	}
 
-	http.HandleFunc("/put/", with_ctx(put))
-	http.HandleFunc("/get/", with_ctx(get))
+	http.HandleFunc("/put/", with_state(put))
+	http.HandleFunc("/get/", with_state(get))
 
-	log.Println("Starting server on", ctx.port, "writing to", ctx.db)
-	log.Fatal(http.ListenAndServe(ctx.port, nil))
 }
 
 /*    way/
  * Get the queue name from the URL and the message from the
  * body and save the message to the queue
  */
-func put(ctx *context, r *http.Request, w http.ResponseWriter) {
+func put(state *state, r *http.Request, w http.ResponseWriter) {
 	name := getQueueName(r)
 	if len(name) == 0 {
 		err_("put: Invalid/Missing queue name", 400, w)
@@ -69,7 +76,7 @@ func put(ctx *context, r *http.Request, w http.ResponseWriter) {
 		err_("put: Message content too big", 400, w)
 		return
 	}
-	num, err := save(name, uint32(len_), r.Body, ctx)
+	num, err := save(name, uint32(len_), r.Body, state)
 	if err != nil {
 		err_(err.Error(), 500, w)
 		return
@@ -81,10 +88,10 @@ func put(ctx *context, r *http.Request, w http.ResponseWriter) {
  * Find the appropriate queue (create if doesn't exist)
  * and save the data to it
  */
-func save(name string, len_ uint32, inp io.ReadCloser, ctx *context) (int, error) {
-	mlg := findLog(name, ctx)
+func save(name string, len_ uint32, inp io.ReadCloser, state *state) (int, error) {
+	mlg := findLog(name, state)
 	if mlg == nil {
-		mlg = createLog(name, ctx)
+		mlg = createLog(name, state)
 		if mlg == nil {
 			return 0, errors.New("save: failed to create log")
 		}
@@ -97,13 +104,13 @@ func save(name string, len_ uint32, inp io.ReadCloser, ctx *context) (int, error
 	return len(mlg.msgs), nil
 }
 
-func loadLogs(ctx *context) {
-	files, err := ioutil.ReadDir(ctx.db)
+func loadLogs(state *state) {
+	files, err := ioutil.ReadDir(state.db)
 	if err != nil {
-		log.Panic("Failed to read", ctx.db)
+    log.Panic("Failed to read:", state.db)
 	}
 	for _, f := range files {
-		loadLog(f, ctx)
+		loadLog(f, state)
 	}
 }
 
@@ -113,12 +120,12 @@ func loadLogs(ctx *context) {
  * each starts with a valid header and keeping
  * track of the offsets
  */
-func loadLog(inf os.FileInfo, ctx *context) {
+func loadLog(inf os.FileInfo, state *state) {
 	name := inf.Name()
 	if !strings.HasSuffix(name, ".log") {
 		return
 	}
-	logfile := path.Join(ctx.db, name)
+	logfile := path.Join(state.db, name)
 	f, err := os.OpenFile(logfile, os.O_RDWR, 0644)
 	if err != nil {
 		log.Panic("loadLog:Failed to open:", f.Name, err)
@@ -143,7 +150,7 @@ func loadLog(inf os.FileInfo, ctx *context) {
 		offset += int64(reclen) + RECHEADERSZ
 	}
 	name = name[:len(name)-len(".log")]
-	ctx.logs = append(ctx.logs, &msglog{
+	state.logs = append(state.logs, &msglog{
 		name: name,
 		f:    f,
 		msgs: msgs,
@@ -174,8 +181,8 @@ func getRecLen(offset int64, f *os.File) (uint32, error) {
 	return v, nil
 }
 
-func createLog(name string, ctx *context) *msglog {
-	logfile := path.Join(ctx.db, name+".log")
+func createLog(name string, state *state) *msglog {
+	logfile := path.Join(state.db, name+".log")
 	f, err := os.OpenFile(logfile, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
 		log.Println("createLog:", err)
@@ -191,7 +198,7 @@ func createLog(name string, ctx *context) *msglog {
 		f:    f,
 		msgs: []int64{},
 	}
-	ctx.logs = append(ctx.logs, msglog)
+	state.logs = append(state.logs, msglog)
 	return msglog
 }
 
@@ -231,8 +238,8 @@ func saveMsg(len_ uint32, inp io.ReadCloser, mlg *msglog) (int64, error) {
 	return 0, err
 }
 
-func findLog(name string, ctx *context) *msglog {
-	for _, log := range ctx.logs {
+func findLog(name string, state *state) *msglog {
+	for _, log := range state.logs {
 		if strings.ToLower(log.name) == strings.ToLower(name) {
 			return log
 		}
@@ -259,13 +266,13 @@ func getQueueName(r *http.Request) string {
 	}
 }
 
-func get(ctx *context, r *http.Request, w http.ResponseWriter) {
+func get(state *state, r *http.Request, w http.ResponseWriter) {
 	name := getQueueName(r)
 	if len(name) == 0 {
 		err_("get: Invalid/Missing queue name", 400, w)
 		return
 	}
-	mlg := findLog(name, ctx)
+	mlg := findLog(name, state)
 	if mlg == nil {
 		err_("get: No log found:"+name, 404, w)
 		return
@@ -325,13 +332,13 @@ type msglog struct {
 	msgs []int64
 }
 
-type context struct {
-	port string
+type state struct {
+	addr string
 	db   string
 	logs []*msglog
 }
 
-type reqHandler func(*context, *http.Request, http.ResponseWriter)
+type reqHandler func(*state, *http.Request, http.ResponseWriter)
 type httpHandler func(http.ResponseWriter, *http.Request)
 
 var DBHEADER = []byte("EE|v1|")
