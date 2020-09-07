@@ -24,16 +24,16 @@ import (
  * request handlers and start our server.
  */
 func main() {
-  state := initState()
+	state := initState()
 	loadLogs(state)
-  setupRequestHandlers(state)
+	setupRequestHandlers(state)
 
 	log.Println("Starting server on", state.addr, "writing to", state.db)
 	log.Fatal(http.ListenAndServe(state.addr, nil))
 }
 
 func initState() *state {
-	return &state {
+	return &state{
 		addr: "127.0.0.1:7749",
 		db:   path.Join("..", "evey-data"),
 		logs: []*msglog{},
@@ -100,18 +100,18 @@ func save(name string, len_ uint32, inp io.ReadCloser, state *state) (int, error
 	if err != nil {
 		return 0, err
 	}
-  recoffset := offset + RECHEADERSZ
-  mlg.msgs = append(mlg.msgs, recptr {
-    off: recoffset,
-    sz: len_,
-  })
+	recoffset := offset + RECHEADERSZ
+	mlg.msgs = append(mlg.msgs, recptr{
+		off: recoffset,
+		sz:  len_,
+	})
 	return len(mlg.msgs), nil
 }
 
 func loadLogs(state *state) {
 	files, err := ioutil.ReadDir(state.db)
 	if err != nil {
-    log.Panic("Failed to read:", state.db)
+		log.Panic("Failed to read:", state.db)
 	}
 	for _, f := range files {
 		loadLog(f, state)
@@ -150,11 +150,11 @@ func loadLog(inf os.FileInfo, state *state) {
 		if err != nil {
 			log.Panic("loadLog:", err.Error(), " at offset:", offset, " for file:", name)
 		}
-    recoffset := offset + RECHEADERSZ
-    msgs = append(msgs, recptr {
-      off: recoffset,
-      sz: reclen,
-    })
+		recoffset := offset + RECHEADERSZ
+		msgs = append(msgs, recptr{
+			off: recoffset,
+			sz:  reclen,
+		})
 		offset = recoffset + int64(reclen)
 	}
 	name = name[:len(name)-len(".log")]
@@ -295,12 +295,12 @@ func get(state *state, r *http.Request, w http.ResponseWriter) {
 		err_("get: Invalid msg number", 400, w)
 		return
 	}
-  n -= 1
+	n -= 1
 	if int(n) >= len(mlg.msgs) {
-    w.WriteHeader(204)
-    return
-  }
-  sendLog(mlg, uint32(n), w)
+		w.WriteHeader(204)
+		return
+	}
+	sendLog(mlg, uint32(n), w)
 }
 
 func sendLog(mlg *msglog, n uint32, w http.ResponseWriter) {
@@ -341,8 +341,8 @@ type state struct {
 }
 
 type recptr struct {
-  off int64
-  sz uint32
+	off int64
+	sz  uint32
 }
 
 type reqHandler func(*state, *http.Request, http.ResponseWriter)
