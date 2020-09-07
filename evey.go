@@ -100,7 +100,11 @@ func save(name string, len_ uint32, inp io.ReadCloser, state *state) (int, error
 	if err != nil {
 		return 0, err
 	}
-	mlg.msgs = append(mlg.msgs, offset)
+  recoffset := offset + RECHEADERSZ
+  mlg.msgs = append(mlg.msgs, recptr {
+    off: recoffset,
+    sz: len_,
+  })
 	return len(mlg.msgs), nil
 }
 
@@ -118,7 +122,7 @@ func loadLogs(state *state) {
  * If this looks like a log file, we read in the
  * header, then walk the records checking that
  * each starts with a valid header and keeping
- * track of the offsets
+ * track of the offsets and sizes
  */
 func loadLog(inf os.FileInfo, state *state) {
 	name := inf.Name()
@@ -138,16 +142,20 @@ func loadLog(inf os.FileInfo, state *state) {
 	if bytes.Compare(DBHEADER, hdr) != 0 {
 		log.Panic("loadLog:Invalid DB header:", f.Name)
 	}
-	var msgs []int64
+	var msgs []recptr
 	sz := inf.Size()
 	offset := int64(len(DBHEADER))
 	for offset < sz {
-		msgs = append(msgs, offset)
 		reclen, err := getRecLen(offset, f)
 		if err != nil {
 			log.Panic("loadLog:", err.Error(), " at offset:", offset, " for file:", name)
 		}
-		offset += int64(reclen) + RECHEADERSZ
+    recoffset := offset + RECHEADERSZ
+    msgs = append(msgs, recptr {
+      off: recoffset,
+      sz: reclen,
+    })
+		offset = recoffset + int64(reclen)
 	}
 	name = name[:len(name)-len(".log")]
 	state.logs = append(state.logs, &msglog{
@@ -196,7 +204,7 @@ func createLog(name string, state *state) *msglog {
 	msglog := &msglog{
 		name: name,
 		f:    f,
-		msgs: []int64{},
+		msgs: nil,
 	}
 	state.logs = append(state.logs, msglog)
 	return msglog
@@ -296,15 +304,9 @@ func get(state *state, r *http.Request, w http.ResponseWriter) {
 }
 
 func sendLog(mlg *msglog, n uint32, w http.ResponseWriter) {
-	off := mlg.msgs[n]
-	reclen, err := getRecLen(off, mlg.f)
-	if err != nil {
-		err_(err.Error(), 500, w)
-		return
-	}
-	rec := make([]byte, reclen)
-  off += RECHEADERSZ
-	if n, _ := mlg.f.ReadAt(rec, off); n < len(rec) {
+	recptr := mlg.msgs[n]
+	rec := make([]byte, recptr.sz)
+	if n, _ := mlg.f.ReadAt(rec, recptr.off); n < len(rec) {
 		err_("Failed reading record", 500, w)
 		return
 	}
@@ -329,13 +331,18 @@ func err_(error string, code int, w http.ResponseWriter) {
 type msglog struct {
 	name string
 	f    *os.File
-	msgs []int64
+	msgs []recptr
 }
 
 type state struct {
 	addr string
 	db   string
 	logs []*msglog
+}
+
+type recptr struct {
+  off int64
+  sz uint32
 }
 
 type reqHandler func(*state, *http.Request, http.ResponseWriter)
